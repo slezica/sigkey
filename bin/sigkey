@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+
+# sigkey [-h] [-k|--key <name>] [-2|--twice] <pid>
+
+import sys, os, time, signal, argparse
+from datetime import datetime
+from types import SimpleNamespace
+
+try:
+    import psutil
+    from pynput.keyboard import Key, KeyCode, Listener, HotKey
+except ImportError:
+    print("Missing dependencies: sigkey requires the pynput and psutil modules")
+    sys.exit(1)
+
+
+DESCRIPTION="Stop/continue a process using a global hotkey"
+
+EPILOG = """
+# Hotkey Syntax
+
+- Single-character keys are literal, like 'a' or ']'
+- Special keys are multi-character names like 'ctrl' or 'f1'
+- Key sequences are joined by '+', like in 'ctrl+shift+a'
+- All hotkeys are case-insensitive
+
+## Special key names
+
+- alt, alt_l, alt_r, alt_gr
+- cmd, cmd_l, cmd_r
+- ctrl, ctrl_l, ctrl_r
+- shift, shift_l, shift_r
+
+- space, enter, tab, backspace, delete, esc, caps_lock
+- up, down, left, right, home, end, page_up, page_down
+- f1, f2, ... f20
+
+- media_play_pause, media_volume_mute, media_volume_down
+  media_volume_up, media_previous, media_next
+
+# Examples
+
+Trigger using f12 (the default):
+    sigkey <pid>
+
+Trigger using f2:
+    sigkey -k f2 <pid>
+
+Trigger using a double right shift press:
+    sigkey -2k shift_r <pid>
+
+Trigger using a key combination:
+    sigkey -k ctrl+alt+a <pid>
+
+Run hooks after sending signals:
+    sigkey --after-stop 'echo SIGSTOP sent' --after-cont 'echo SIGCONT sent' <pid>
+
+Run hooks before sending signals, skip one if hook exit status is nonzero:
+    sigkey --before-stop 'true' --before-cont 'false' <pid>
+"""
+
+TRIGGER_DEFAULT = 'f12'
+TRIGGER_TWICE_TIME = 0.4
+
+BELL_STOP_COUNT = 1
+BELL_CONT_COUNT = 2
+
+
+state = SimpleNamespace()
+
+def init(args):
+    # Target process:
+    state.pid = args.pid
+
+    # Trigger key:
+    state.trigger = parse_trigger(args.key)
+    state.twice = args.twice
+
+    # Hooks:
+    state.before = {
+        signal.SIGSTOP: args.before_stop,
+        signal.SIGCONT: args.before_cont
+    }
+    state.after = {
+        signal.SIGSTOP: args.after_stop,
+        signal.SIGCONT: args.after_cont
+    }
+
+    # Sounds:
+    state.quiet = args.quiet
+
+    # Transient state:
+    state.pressed = set()
+    state.last_release = datetime(1970, 1, 1)
+
+
+def fail(msg, status=1):
+    print(msg)
+    sys.exit(status)
+
+
+def get_process(pid):
+    # Return `Process` for `pid`, or `None` if not found:
+    try:
+        return psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return None
+
+
+def bell(count):
+    if state.quiet:
+        return
+
+    for _ in range(count):
+        print('\a', end="\r")
+        time.sleep(0.1)
+
+
+def send_signal(process, sig):
+    if state.before[sig] and os.system(state.before[sig]) != 0:
+        print(f"Skipping {sig.name} (before command returned with nonzero status)")
+        return
+
+    print(f"[{process.pid}] Sending {sig.name}")
+    process.send_signal(sig)
+
+    if state.after[sig]:
+        os.system(state.after[sig])
+
+
+def send_signal_toggle(process):
+    # Send STOP or CONT according to the current process state:
+    if process.status() == psutil.STATUS_STOPPED:
+        send_signal(process, signal.SIGCONT)
+        bell(BELL_CONT_COUNT)
+    else:
+        send_signal(process, signal.SIGSTOP)
+        bell(BELL_STOP_COUNT)
+
+
+def on_press(key):
+    # Remember the key is pressed (on_release removes this item):
+    state.pressed.add(get_keycode(key))
+
+    if state.pressed != state.trigger:
+        return
+
+    # Remember last trigger and calculate elapsed time:
+    now = datetime.now()
+    elapsed = (now - state.last_release).total_seconds()
+    state.last_release = datetime.now()
+
+    # Skip single triggers if 2 are required:
+    if state.twice and elapsed > TRIGGER_TWICE_TIME:
+        return True # continue listening
+
+    # Find the process, of fail gracefully:
+    process = get_process(state.pid)
+    if process is None:
+        return False # stops listener
+
+    send_signal_toggle(process)
+    return True
+
+def on_release(key):
+    state.pressed.discard(get_keycode(key))
+
+def get_keycode(key):
+    if isinstance(key, Key):
+        key = key.value
+
+    return key.vk if hasattr(key, 'vk') else key.char if hasattr(key, 'char') else key
+
+def parse_trigger(arg):
+    # Convert our CLI format to pynput format (basically wrap special keys in '<...>')
+    # Validation is performed by HotKey.parse() and I'm lazy.
+    if len(arg) < 2:
+        formatted = arg
+    else:
+        formatted = '+'.join(
+            f"<{name}>" if len(name) > 1 else name
+            for name in arg.split('+')
+        )
+
+    return set(get_keycode(key) for key in HotKey.parse(formatted))
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description=DESCRIPTION,
+        formatter_class=argparse.RawTextHelpFormatter, # preserve newlines
+        epilog=EPILOG
+    )
+
+    parser.add_argument(
+        "pid",
+        type=int,
+        help="Target process PID"
+    )
+
+    parser.add_argument(
+        "-k", "--key",
+        type=str,
+        default=TRIGGER_DEFAULT,
+        help="Trigger key/combo"
+    )
+
+    parser.add_argument(
+        "-2", "--twice",
+        action="store_true",
+        help="Require a double keypress"
+    )
+
+    parser.add_argument(
+        "-q", "--quiet",
+        action="store_true",
+        help="Disable bell when sending signals"
+    )
+
+    parser.add_argument(
+        "--before-stop",
+        type=str,
+        default="",
+        help="Command to run before SIGSTOP (skip signal on nonzero status)"
+    )
+
+    parser.add_argument(
+        "--after-stop",
+        type=str,
+        default="",
+        help="Command to run after SIGSTOP"
+    )
+
+    parser.add_argument(
+        "--before-cont",
+        type=str,
+        default="",
+        help="Command to run before SIGCONT (skip signal on nonzero status)"
+    )
+
+    parser.add_argument(
+        "--after-cont",
+        type=str,
+        default="",
+        help="Command to run after SIGCONT"
+    )
+
+    return parser.parse_args()
+
+def main():
+    args = parse_args()
+    init(args)
+
+    if not get_process(state.pid):
+        fail(f"Error: no process with PID {state.pid}")
+
+    with Listener(on_press=on_press, on_release=on_release, daemon=True) as t:
+        while True:
+            if not get_process(state.pid):
+                fail("Error: process died.")
+
+            t.join(1.0) # sleep for 1 second, wake up if listener thread stops
+
+            if not t.is_alive():
+                fail("Error: keyboard listener stopped unexpectedly.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass # expected way to exit
+
