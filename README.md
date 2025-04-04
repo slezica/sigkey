@@ -8,11 +8,15 @@ cpu-intensive background processes or large downloads while working (or gaming).
 Just grab a copy of the `sigkey` python script from the `bin` directory, and put it in your `$PATH`.
 It requires `python3` with the `psutil` and `pynput` packages installed.
 
+For example:
+
 ```bash
 cd sigkey
-pip install -r requirements.txt
+pip install -r requirements.txt # or do it manually
 cp bin/sigkey $HOME/bin
 ```
+
+If you prefer using a virtualenv, use a bash script to source it and then call `bin/sigkey "$@"`.
 
 ## Usage
 
