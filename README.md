@@ -1,6 +1,7 @@
 # sigkey
 
-Use a global hotkey to toggle (pause/resume) a target process using SIGSTOP and SIGCONT.
+Use a global hotkey to toggle (pause/resume) a target process using `SIGSTOP` and `SIGCONT`. Useful to control
+cpu-intensive background processes or large downloads while working (or gaming).
 
 ## Installation
 
@@ -15,8 +16,8 @@ cp bin/sigkey $HOME/bin
 
 ## Usage
 
-Call `sigkey <pid>` to toggle the target PID using F12 (the default). You will hear a beep
-when paused, a double-beep when resumed.
+Call `sigkey <pid>` to toggle the target PID using F12 (the default). You will hear a bell
+when paused, a double-bell when resumed.
 
 See [options](#Options) below and [examples](#Examples) at the end.
 
@@ -52,9 +53,9 @@ sigkey --after-cont 'echo yay' <pid>
 
 Valid key descriptions for the `-k` (or `--key`) flag follow these rules:
 
-- Single-character keys are literal, like 'a' or ']'
-- Special keys are multi-character names like 'ctrl' or 'f1'
-- Key sequences are joined by '+', like in 'ctrl+shift+a'
+- Single-character keys are literal, like `a` or `]`
+- Special keys are multi-character names like `ctrl` or `f1`
+- Key sequences are joined by `+`, like in `ctrl+shift+a`
 - All hotkeys are case-insensitive
 
 
